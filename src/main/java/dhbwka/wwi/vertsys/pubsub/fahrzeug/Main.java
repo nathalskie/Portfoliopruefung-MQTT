@@ -14,10 +14,14 @@ import java.io.File;
 import java.io.FileInputStream;
 import java.io.IOException;
 import java.io.InputStreamReader;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Timer;
+import java.util.TimerTask;
 import org.eclipse.paho.client.mqttv3.MqttClient;
 import org.eclipse.paho.client.mqttv3.MqttConnectOptions;
+import org.eclipse.paho.client.mqttv3.MqttException;
 import org.eclipse.paho.client.mqttv3.MqttMessage;
 
 /**
@@ -65,18 +69,21 @@ public class Main {
         //
         // Die Nachricht muss dem MqttConnectOptions-Objekt übergeben werden
         // und soll an das Topic Utils.MQTT_TOPIC_NAME gesendet werden.
+        
         StatusMessage message = new StatusMessage();
+        message.vehicleId = vehicleId;
+        message.message = "Verbindung abgebrochen";
         message.type = StatusType.CONNECTION_LOST;
+        
+        String clientId = "Fahzeug-" + System.currentTimeMillis();
         
         //Verbindung zum MQTT-Broker herstellen.
         MqttConnectOptions options = new MqttConnectOptions();
         options.setCleanSession(true);
-        //Nachricht übergeben 
-        options.setWill(Utils.MQTT_TOPIC_NAME, "Disconnected!".getBytes(), 2, false);
+        
+        options.setWill(Utils.MQTT_TOPIC_NAME, message.toJson(), 0, false);
                 
-        String clientId = "Fahzeug-Client-" + System.currentTimeMillis();
- 
-        MqttClient client = new MqttClient(Utils.MQTT_BROKER_ADDRESS, clientId);
+        MqttClient client = new MqttClient(mqttAddress, clientId);
         client.connect(options);
 
         // TODO: Statusmeldung mit "type" = "StatusType.VEHICLE_READY" senden.
@@ -87,15 +94,34 @@ public class Main {
         message2.vehicleId = vehicleId;
         message2.type = StatusType.VEHICLE_READY;
     
-        client.publish(Utils.MQTT_TOPIC_NAME, message2);
-
-   
+        client.publish(Utils.MQTT_TOPIC_NAME, message2.toJson(), 0, false);
         
         // TODO: Thread starten, der jede Sekunde die aktuellen Sensorwerte
         // des Fahrzeugs ermittelt und verschickt. Die Sensordaten sollen
         // an das Topic Utils.MQTT_TOPIC_NAME + "/" + vehicleId gesendet werden.
         Vehicle vehicle = new Vehicle(vehicleId, waypoints);
         vehicle.startVehicle();
+        
+        TimerTask task = new TimerTask(){
+            @Override
+            public void run () {
+                SensorMessage sm = vehicle.getSensorData();
+                
+                byte[] json = sm.toJson();
+                String topic = Utils.MQTT_TOPIC_NAME + "/" + vehicleId;
+                System.out.println(topic + " → " + new String(json, StandardCharsets.UTF_8));
+
+                 try {
+                    MqttMessage message = new MqttMessage(json);
+                    client.publish(topic, message);
+                } catch (MqttException ex) {
+                    Utils.logException(ex);
+                }
+            }
+        };
+        
+        Timer timer = new Timer(true); 
+        timer.scheduleAtFixedRate(task, 0, 1000);
 
         // Warten, bis das Programm beendet werden soll
         Utils.fromKeyboard.readLine();
@@ -110,6 +136,7 @@ public class Main {
         // beenden, falls es kein Daemon-Thread ist.
         
         //LastWill-Nachricht versenden
+        client.publish(Utils.MQTT_TOPIC_NAME, message.toJson(), 0, false);
         
         //Verbindung trennen 
         client.disconnect();
@@ -148,7 +175,7 @@ public class Main {
         String line;
         
         while ((line = fromFile.readLine()) != null) {
-            String[] fields = line.split("//|");
+            String[] fields = line.split("\\|");
             
             if (fields.length >= 2) {
                 String longitudeStr = fields[0];
